@@ -1,0 +1,198 @@
+const { analyzeString } = require('../utils/analyzer');
+const store = require('../storage/store');
+
+exports.createString = (req, res) => {
+  try {
+    const { value } = req.body;
+
+    if (!value) {
+      return res.status(400).json({ error: 'Missing "value" field' });
+    }
+
+    if (typeof value !== 'string') {
+      return res.status(422).json({ error: 'Invalid data type for "value" (must be string)' });
+    }
+
+    const properties = analyzeString(value);
+    const id = properties.sha256_hash;
+
+    if (store.exists(id)) {
+      return res.status(409).json({ error: 'String already exists in the system' });
+    }
+
+    const stringData = {
+      id,
+      value,
+      properties,
+      created_at: new Date().toISOString()
+    };
+
+    store.set(id, stringData);
+    return res.status(201).json(stringData);
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.getSpecificString = (req, res) => {
+  try {
+    const { stringValue } = req.params;
+    const properties = analyzeString(stringValue);
+    const id = properties.sha256_hash;
+
+    const stringData = store.get(id);
+
+    if (!stringData) {
+      return res.status(404).json({ error: 'String does not exist in the system' });
+    }
+
+    return res.status(200).json(stringData);
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.getAllStrings = (req, res) => {
+  try {
+    const { is_palindrome, min_length, max_length, word_count, contains_character } = req.query;
+
+    let allStrings = store.getAll();
+
+    if (is_palindrome !== undefined) {
+      const palindromeValue = is_palindrome === 'true';
+      allStrings = allStrings.filter(s => s.properties.is_palindrome === palindromeValue);
+    }
+
+    if (min_length !== undefined) {
+      const minLen = parseInt(min_length);
+      if (isNaN(minLen)) return res.status(400).json({ error: 'Invalid min_length' });
+      allStrings = allStrings.filter(s => s.properties.length >= minLen);
+    }
+
+    if (max_length !== undefined) {
+      const maxLen = parseInt(max_length);
+      if (isNaN(maxLen)) return res.status(400).json({ error: 'Invalid max_length' });
+      allStrings = allStrings.filter(s => s.properties.length <= maxLen);
+    }
+
+    if (word_count !== undefined) {
+      const wCount = parseInt(word_count);
+      if (isNaN(wCount)) return res.status(400).json({ error: 'Invalid word_count' });
+      allStrings = allStrings.filter(s => s.properties.word_count === wCount);
+    }
+
+    if (contains_character !== undefined) {
+      const char = contains_character.toLowerCase();
+      allStrings = allStrings.filter(s => s.properties.character_frequency_map[char] !== undefined);
+    }
+
+    const filters_applied = {
+      ...(is_palindrome !== undefined && { is_palindrome: is_palindrome === 'true' }),
+      ...(min_length !== undefined && { min_length: parseInt(min_length) }),
+      ...(max_length !== undefined && { max_length: parseInt(max_length) }),
+      ...(word_count !== undefined && { word_count: parseInt(word_count) }),
+      ...(contains_character !== undefined && { contains_character })
+    };
+
+    return res.status(200).json({
+      data: allStrings,
+      count: allStrings.length,
+      filters_applied
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.filterByNaturalLanguage = (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query) {
+      return res.status(400).json({ error: 'Missing query parameter' });
+    }
+
+    const parsed_filters = {};
+    const queryLower = query.toLowerCase();
+
+    if (queryLower.includes('single word') || queryLower.includes('one word')) {
+      parsed_filters.word_count = 1;
+    }
+
+    if (queryLower.includes('palindrom')) {
+      parsed_filters.is_palindrome = true;
+    }
+
+    if (queryLower.includes('longer than')) {
+      const match = queryLower.match(/longer than\s+(\d+)/);
+      if (match) {
+        parsed_filters.min_length = parseInt(match[1]) + 1;
+      }
+    }
+
+    if (queryLower.includes('shorter than')) {
+      const match = queryLower.match(/shorter than\s+(\d+)/);
+      if (match) {
+        parsed_filters.max_length = parseInt(match[1]) - 1;
+      }
+    }
+
+    if (queryLower.includes('contain') && queryLower.includes('letter')) {
+      const match = queryLower.match(/letter\s+([a-z])/);
+      if (match) {
+        parsed_filters.contains_character = match[1];
+      }
+    }
+
+    let results = store.getAll();
+
+    if (parsed_filters.word_count !== undefined) {
+      results = results.filter(s => s.properties.word_count === parsed_filters.word_count);
+    }
+
+    if (parsed_filters.is_palindrome !== undefined) {
+      results = results.filter(s => s.properties.is_palindrome === parsed_filters.is_palindrome);
+    }
+
+    if (parsed_filters.min_length !== undefined) {
+      results = results.filter(s => s.properties.length >= parsed_filters.min_length);
+    }
+
+    if (parsed_filters.max_length !== undefined) {
+      results = results.filter(s => s.properties.length <= parsed_filters.max_length);
+    }
+
+    if (parsed_filters.contains_character !== undefined) {
+      const char = parsed_filters.contains_character;
+      results = results.filter(s => s.properties.character_frequency_map[char] !== undefined);
+    }
+
+    return res.status(200).json({
+      data: results,
+      count: results.length,
+      interpreted_query: {
+        original: query,
+        parsed_filters
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+exports.deleteString = (req, res) => {
+  try {
+    const { stringValue } = req.params;
+    const properties = analyzeString(stringValue);
+    const id = properties.sha256_hash;
+
+    if (!store.exists(id)) {
+      return res.status(404).json({ error: 'String does not exist in the system' });
+    }
+
+    store.delete(id);
+    return res.status(204).send();
+  } catch (error) {
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
